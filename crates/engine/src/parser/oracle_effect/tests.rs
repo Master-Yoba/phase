@@ -168,6 +168,63 @@ fn total_mana_value_return_dynamic_untargeted_budget_is_honest_gap() {
     );
 }
 
+/// SHAPE: an unconsumed destination rider fails closed; a rider the shared
+/// destination grammar consumes (a fixed-count counter) keeps the subset choice.
+#[test]
+fn aggregate_return_unconsumed_rider_is_honest_gap() {
+    let gap = parse_effect_clause(
+        "Return any number of creature cards with total mana value 6 or less from your graveyard to the battlefield with X +1/+1 counters on them.",
+        &mut ParseContext::default(),
+    );
+    assert!(
+        matches!(gap.effect, Effect::Unimplemented { ref name, .. }
+        if name == "return_subset_unconsumed_rider"),
+        "{:?}",
+        gap.effect
+    );
+
+    let control = parse_effect_clause(
+        "Return any number of creature cards with total mana value 6 or less from your graveyard to the battlefield with a finality counter on it.",
+        &mut ParseContext::default(),
+    );
+    assert!(
+        matches!(
+            control.effect,
+            Effect::ChooseFromZone {
+                constraint: Some(ChooseFromZoneConstraint::TotalManaValue { value: 6, .. }),
+                ..
+            }
+        ),
+        "{:?}",
+        control.effect
+    );
+    assert!(
+        matches!(
+            control.sub_ability.as_ref().unwrap().effect.as_ref(),
+            Effect::ChangeZone { enter_with_counters, .. } if enter_with_counters.len() == 1
+        ),
+        "{:?}",
+        control.sub_ability
+    );
+}
+
+/// SHAPE: a recognized dynamic cardinality reaches the existing gap marker
+/// instead of becoming an ordinary return that drops the aggregate budget.
+#[test]
+fn aggregate_return_dynamic_cardinality_is_honest_gap() {
+    let parsed = parse_oracle_text(
+        "Return up to X creature cards with total mana value 6 or less from your graveyard to the battlefield.",
+        "Dynamic cardinality aggregate return", &[], &["Sorcery".to_string()], &[],
+    );
+    assert_eq!(parsed.abilities.len(), 1);
+    assert!(
+        matches!(parsed.abilities[0].effect.as_ref(), Effect::Unimplemented { name, .. }
+        if name == "return_subset_dynamic_cardinality"),
+        "{:?}",
+        parsed.abilities[0].effect
+    );
+}
+
 /// SHAPE: a delayed instruction must keep the descriptor's own count, too.
 #[test]
 fn delayed_aggregate_return_keeps_resolution_choice_cardinality() {

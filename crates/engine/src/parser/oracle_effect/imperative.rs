@@ -2270,11 +2270,14 @@ pub(super) fn parse_targeted_action_ast(
                 }
             }
         };
+        // A dynamic maximum ("up to X") keeps its typed cardinality so the
+        // subset lowering reaches its `return_subset_dynamic_cardinality` gap
+        // marker instead of falling back to an ordinary, budget-free return.
         let choice_constraint = if matches!(target_syntax, TargetSyntax::Descriptor)
-            && return_choice_cardinality.as_ref().is_some_and(|spec| {
-                matches!(spec.min, QuantityExpr::Fixed { value: 0 })
-                    && matches!(spec.max, None | Some(QuantityExpr::Fixed { .. }))
-            }) {
+            && return_choice_cardinality
+                .as_ref()
+                .is_some_and(|spec| matches!(spec.min, QuantityExpr::Fixed { value: 0 }))
+        {
             aggregate_return.map(|(_, constraint)| constraint)
         } else {
             if aggregate_return.is_some() {

@@ -11055,6 +11055,17 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         {
             return parsed_clause(Effect::unimplemented("return_subset_compound", text));
         }
+        // CR 608.2c: any other destination rider the shared destination grammar
+        // did not consume (e.g. "with X +1/+1 counters on them") would be
+        // silently dropped by the subset lowering. Recognized riders (tapped,
+        // control, fixed-count counters) are consumed into the destination and
+        // never reach this remainder.
+        if !remainder.trim().is_empty() {
+            return parsed_clause(Effect::unimplemented(
+                "return_subset_unconsumed_rider",
+                text,
+            ));
+        }
         if nom_primitives::scan_preceded(aggregate_lower.as_str(), |input| {
             tag::<_, _, OracleError<'_>>("with total mana value x").parse(input)
         })
