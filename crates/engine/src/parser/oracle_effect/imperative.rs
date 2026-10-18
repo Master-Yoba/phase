@@ -1653,18 +1653,14 @@ pub(super) fn aggregate_return_choice_cardinality(
     let (noun, cardinality) = strip_leading_quantifier(rest);
     let cardinality = cardinality?;
     let (target_text, destination, _) = super::strip_return_destination_ext_with_remainder(noun);
-    let target_lower = target_text.to_ascii_lowercase();
-    nom_primitives::scan_preceded(target_lower.as_str(), |input| {
-        tag::<_, _, OracleError<'_>>("with total mana value ").parse(input)
-    })?;
-    // Preserve X for the existing honest-gap guard even when returning to hand.
-    // Fixed-budget choices implemented here are battlefield returns only.
-    if destination?.zone != Zone::Battlefield
-        && nom_primitives::scan_preceded(target_lower.as_str(), |input| {
-            tag::<_, _, OracleError<'_>>("with total mana value x").parse(input)
-        })
-        .is_none()
-    {
+    // Claim only the budgets the subset lowering enforces: a literal total, read
+    // by the same parser the lowering uses, on a battlefield return. A dynamic
+    // "total mana value X" budget stays on the shared target-constraint path
+    // (`lower::parse_total_mana_value_target_constraint`), whose resolution
+    // refusal (`lower::refuse_unenforced_aggregate_resolution_selection`) owns
+    // that class.
+    strip_fixed_return_mana_value_budget(target_text)?;
+    if destination?.zone != Zone::Battlefield {
         return None;
     }
     let mut probe_ctx = ctx.clone_throwaway();

@@ -154,7 +154,8 @@ fn total_mana_value_return_targeted_and_per_card_siblings_shape() {
     }
 }
 
-/// SHAPE: unsupported dynamic untargeted budgets never silently become zero.
+/// SHAPE: a dynamic untargeted budget is not claimed by the fixed-budget subset
+/// lowering; it reaches the shared aggregate-selection refusal, never a zero cap.
 #[test]
 fn total_mana_value_return_dynamic_untargeted_budget_is_honest_gap() {
     let parsed = parse_oracle_text(
@@ -164,7 +165,9 @@ fn total_mana_value_return_dynamic_untargeted_budget_is_honest_gap() {
     assert_eq!(parsed.abilities.len(), 1);
     assert!(
         matches!(parsed.abilities[0].effect.as_ref(), Effect::Unimplemented { name, .. }
-        if name == "return_subset_dynamic_mana_value")
+        if name == super::lower::UNENFORCED_AGGREGATE_RESOLUTION_SELECTION_GAP),
+        "{:?}",
+        parsed.abilities[0].effect
     );
 }
 

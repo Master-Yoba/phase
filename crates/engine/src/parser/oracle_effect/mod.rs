@@ -11042,9 +11042,8 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     let text = strip_leading_sequence_connector(text)
         .trim()
         .trim_end_matches('.');
-    // CR 608.2d: dynamic untargeted aggregate returns need a live quantity
-    // binding. Do not let the fixed comparator parser collapse X to zero.
-    let aggregate_lower = text.to_ascii_lowercase();
+    // CR 608.2d: a fixed-budget aggregate return lowers to a subset choice; the
+    // checks below keep the shapes that lowering cannot carry honestly red.
     if imperative::aggregate_return_choice_cardinality(text, ctx).is_some() {
         let (_, _, remainder) = strip_return_destination_ext_with_remainder(text);
         // CR 608.2c: the bare-effect compound return lowering cannot carry the
@@ -11063,16 +11062,6 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         if !remainder.trim().is_empty() {
             return parsed_clause(Effect::unimplemented(
                 "return_subset_unconsumed_rider",
-                text,
-            ));
-        }
-        if nom_primitives::scan_preceded(aggregate_lower.as_str(), |input| {
-            tag::<_, _, OracleError<'_>>("with total mana value x").parse(input)
-        })
-        .is_some()
-        {
-            return parsed_clause(Effect::unimplemented(
-                "return_subset_dynamic_mana_value",
                 text,
             ));
         }
