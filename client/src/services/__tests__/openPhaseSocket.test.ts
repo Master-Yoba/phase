@@ -421,7 +421,7 @@ describe("openPhaseSocket", () => {
     expect(ws.close).toHaveBeenCalled();
   });
 
-  it("rejects Full v151 before it can read a TotalManaValue zone choice", async () => {
+  it("rejects Full v151 before it can read the shortcut suggestion", async () => {
     const promise = openPhaseSocket("ws://test");
     const ws = MockWebSocket.instances[0];
     ws.deliverMessage(helloFrame({ protocol_version: 151 }));
@@ -432,7 +432,7 @@ describe("openPhaseSocket", () => {
     expect(ws.close).toHaveBeenCalled();
   });
 
-  it("accepts the literal Full v152 TotalManaValue zone-choice protocol", async () => {
+  it("accepts the literal Full v152 shortcut-suggestion protocol", async () => {
     const promise = openPhaseSocket("ws://test");
     const ws = MockWebSocket.instances[0];
     ws.deliverMessage(helloFrame({ protocol_version: 152 }));

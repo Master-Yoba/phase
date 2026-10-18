@@ -106,8 +106,9 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
- *  134: ChooseFromZoneConstraint.TotalManaValue extends serialized paused zone
- *       choices and ability state; full-game protocol 152.
+ *  134 — game_setup and state_update carry GameState whose loop offers may carry
+ *       ShortcutDecisionSchema suggested_declaration and leading_aims, and
+ *       ShortcutProposal leading_aims. Bumped in lockstep with full-game protocol 152.
  *  133: Populated GameObject.bestow_form carries removed creature subtypes
  *       as an object instead of the legacy boolean; full-game protocol 151.
  *  132 — game_setup and state_update carry GameState whose casting permissions may

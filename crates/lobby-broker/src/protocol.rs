@@ -60,9 +60,12 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 152: `ChooseFromZoneConstraint::TotalManaValue` extends serialized paused
-///      zone choices and ability state. Old readers cannot decode the new tag;
-///      full-game and P2P (wire 134) refuse them before state delivery.
+/// 152 — `ShortcutDecisionSchema` gains `suggested_declaration` (the offer's
+///      eliminating suggestion) and `leading_aims` (published slots a trigger on
+///      the stack already targets), and `ShortcutProposal` gains `leading_aims`.
+///      A v151 peer drops them. Full-game peers and P2P move in lockstep
+///      (wire 134).
+///
 /// 151: Populated `GameObject.bestow_form` carries removed creature subtypes as
 ///      an object instead of the legacy boolean. Old readers cannot decode it;
 ///      full-game and P2P (wire 133) refuse them before state delivery.

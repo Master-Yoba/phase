@@ -77,7 +77,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v140 adds `AttackSubject::EventAttackers` (the attacked players of a trigger's attack
 // event) to ability player scopes in GameState.
 // v151 carries populated Bestow restoration payloads (object instead of boolean).
-// v152 adds the `ChooseFromZoneConstraint::TotalManaValue` zone-choice constraint.
 // v141 adds `ExileLinkKind::CastCost` (CR 607.2q cast-cost exile links) to GameState.
 // v142 adds `LinkedExileSnapshot.incarnation` (CR 400.7) to GameState's linked-exile snapshots.
 // v143 retypes GameState's modal no-repeat history keys to `ObjectIncarnationRef` (CR 400.7).
@@ -92,6 +91,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // `BatchCompletion::TopCardContestRoundComplete`).
 // v149 moves the CR 608.2n owed final part of a paused spell onto the resolution
 // carrier (`GameState.resolving_spell_final_part`; `deferred_spell_delivery` removed).
+// v152 adds `ShortcutDecisionSchema.suggested_declaration` and `.leading_aims`, and
+// `ShortcutProposal.leading_aims`.
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -188,7 +189,8 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 //      `enters_with_modifications` object and the effect's `rider` key), neither parseable
 //      by a v149 peer.
 // +80: v151 carries populated Bestow restoration payloads.
-// +81: v152 adds the TotalManaValue zone-choice constraint.
+// +81: v152 adds `ShortcutDecisionSchema.suggested_declaration` and `.leading_aims`,
+//      and `ShortcutProposal.leading_aims`.
 const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 81;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
@@ -295,7 +297,7 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 //      payload reshape (the permission's `enters_with_modifications` object and the
 //      effect's `rider` key).
 // +79: wire 133 moves with full-game v151 for populated Bestow payloads.
-// +80: wire 134 moves with full-game v152 for TotalManaValue zone choices.
+// +80: wire 134 moves with full-game v152 for the shortcut suggestion fields.
 const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 80;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
