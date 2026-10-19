@@ -6,7 +6,7 @@ use super::sequence::split_clause_sequence;
 use super::*;
 use crate::game::coverage::card_face_has_unimplemented_parts;
 use crate::game::triggers::extract_target_filter_from_effect;
-use crate::parser::oracle_ir::ast::EntersUnderSpec;
+use crate::parser::oracle_ir::ast::{EntersUnderSpec, TargetedImperativeAst};
 use crate::parser::oracle_ir::diagnostic::{ClauseGap, ClauseGapKind};
 use crate::parser::oracle_nom::enters_under::{
     bind_control_clause, ControlAnaphorAntecedent, ControlClausePossessor,
@@ -100,6 +100,64 @@ fn event_source_lift_stops_at_zone_choice_across_independent_siblings() {
         Effect::ChangeZone {
             target: TargetFilter::ParentTarget,
             destination: Zone::Exile,
+            ..
+        }
+    ));
+}
+
+/// SHAPE: an origin-less aggregate-budget return fails closed (CR 608.2d)
+/// instead of dropping its total-mana-value budget, while the same return
+/// with its printed origin still lowers to the subset choice.
+#[test]
+fn origin_less_total_mana_value_return_fails_closed_but_origin_return_composes() {
+    let origin_less = "Return any number of artifact creature cards with total mana value 6 or less to the battlefield";
+    // Reach-guard: the AST really carries the budget with no origin, so the
+    // composing subset arm cannot consume it.
+    let lower = origin_less.to_lowercase();
+    let ast =
+        imperative::parse_targeted_action_ast(origin_less, &lower, &mut ParseContext::default());
+    assert!(
+        matches!(
+            ast,
+            Some(TargetedImperativeAst::ReturnToBattlefield {
+                choice_constraint: Some(ChooseFromZoneConstraint::TotalManaValue { .. }),
+                choice_cardinality: Some(_),
+                origin: None,
+                ..
+            })
+        ),
+        "{ast:?}"
+    );
+    let clause = parse_effect_clause(origin_less, &mut ParseContext::default());
+    assert!(
+        matches!(clause.effect, Effect::Unimplemented { .. }),
+        "an unconsumed budget must not lower to a budget-free return: {:?}",
+        clause.effect
+    );
+
+    let with_origin = parse_effect_clause(
+        "Return any number of artifact creature cards with total mana value 6 or less from your graveyard to the battlefield",
+        &mut ParseContext::default(),
+    );
+    assert!(
+        matches!(
+            with_origin.effect,
+            Effect::ChooseFromZone {
+                constraint: Some(ChooseFromZoneConstraint::TotalManaValue {
+                    comparator: Comparator::LE,
+                    value: 6
+                }),
+                ..
+            }
+        ),
+        "{:?}",
+        with_origin.effect
+    );
+    assert!(matches!(
+        with_origin.sub_ability.as_ref().unwrap().effect.as_ref(),
+        Effect::ChangeZone {
+            target: TargetFilter::ParentTarget,
+            destination: Zone::Battlefield,
             ..
         }
     ));

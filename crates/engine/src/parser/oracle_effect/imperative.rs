@@ -2800,7 +2800,7 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         TargetedImperativeAst::ReturnToBattlefield {
             target,
             origin,
-            choice_constraint: _,
+            choice_constraint,
             choice_cardinality: _,
             enter_transformed,
             enters_under,
@@ -2818,6 +2818,17 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
                 return Effect::unimplemented(
                     "change_zone_enters_under_anaphor",
                     p.printed_clause(),
+                );
+            }
+            // CR 608.2d: the subset is chosen as the effect resolves, under its
+            // printed constraint. The composing clause lowering consumes the
+            // constraint only when it can build the subset choice (printed
+            // origin and cardinality present); a constraint still here was not
+            // consumed and must not lower to a constraint-free return.
+            if choice_constraint.is_some() {
+                return Effect::unimplemented(
+                    "return_subset_unconsumed_constraint",
+                    "return subset with an unconsumed choice constraint",
                 );
             }
             Effect::ChangeZone {
