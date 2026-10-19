@@ -61,10 +61,12 @@ fn technomancer_total_mana_value_return_shape() {
 }
 
 /// SHAPE: explicitly synthetic selection-boundary fixture. CR 608.2c/d
-/// binds the delivery to chosen cards; CR 608.2k keeps the independent
-/// "that creature" instruction bound to the entering event object.
+/// binds the delivery to the chosen cards, and the zone choice is a
+/// chosen-object boundary for the event-source lift: like a library search
+/// (`event_source_lift_stops_at_search_across_independent_siblings`), later
+/// siblings keep the chosen-object antecedent rather than the entering object.
 #[test]
-fn event_source_lift_skips_zone_choice_delivery_but_resumes_at_independent_sibling() {
+fn event_source_lift_stops_at_zone_choice_across_independent_siblings() {
     let parsed = parse_oracle_text(
         "When this creature enters, return any number of artifact creature cards with total mana value 6 or less from your graveyard to the battlefield. Then exile that creature.",
         "Zone Choice Boundary Fixture", &[], &["Creature".to_string()], &[],
@@ -96,7 +98,7 @@ fn event_source_lift_skips_zone_choice_delivery_but_resumes_at_independent_sibli
     assert!(matches!(
         sibling.effect.as_ref(),
         Effect::ChangeZone {
-            target: TargetFilter::TriggeringSource,
+            target: TargetFilter::ParentTarget,
             destination: Zone::Exile,
             ..
         }
