@@ -107,8 +107,17 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *
  * Bumps to date:
  *  139 — ChooseFromZoneConstraint.TotalManaValue extends serialized paused zone
- *       choices and ability state; full-game protocol 157. (Wires 137 and 138
- *       are reserved for open PRs #10036 and #10004.)
+ *       choices and ability state; full-game protocol 157.
+ *  138 — game_setup and state_update carry GameState whose ability conditions
+ *       may carry QuantityQuality/NumberQuality. Bumped in lockstep with
+ *       full-game protocol 156, which also adds the optional per-seat
+ *       created_tokens channel (each seat's pinned creation result) on the
+ *       player-scope tail sidecar inside paused resolution frames.
+ *  137 — game_setup and state_update carry GameState whose parked ChangeZone
+ *       frame stores each remaining member with its pre-event entry
+ *       modifications (CR 603.6a + CR 614.12) and whose resolution state moves
+ *       from version 6 to 7; a v136 peer cannot parse it. Bumped in lockstep
+ *       with full-game protocol 155.
  *  136 — game_setup and state_update carry GameState whose
  *       pending_cost_move_resume may hold PendingCostMoveResume
  *       CounterCostRemovalPayment (a counter-removal cost paused on a CR 616.1

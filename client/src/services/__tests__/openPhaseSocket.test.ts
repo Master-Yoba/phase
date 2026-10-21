@@ -400,6 +400,15 @@ describe("openPhaseSocket", () => {
     expect(ws.close).toHaveBeenCalled();
   });
 
+  it("accepts the literal Full v156 number-quality condition protocol", async () => {
+    const promise = openPhaseSocket("ws://test");
+    const ws = MockWebSocket.instances[0];
+    ws.deliverMessage(helloFrame({ protocol_version: 156 }));
+
+    await expect(promise).resolves.toBeDefined();
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
   it("rejects Full v141 before it can read a linked-exile snapshot's incarnation", async () => {
     const promise = openPhaseSocket("ws://test");
     const ws = MockWebSocket.instances[0];
@@ -443,10 +452,10 @@ describe("openPhaseSocket", () => {
     expect(ws.close).toHaveBeenCalled();
   });
 
-  it("rejects Full v153 before it can read a deferred counter-cost removal", async () => {
+  it.each([152, 153, 154])("rejects Full v%s before it can read a parked ChangeZone frame's pre-event member entries", async (version) => {
     const promise = openPhaseSocket("ws://test");
     const ws = MockWebSocket.instances[0];
-    ws.deliverMessage(helloFrame({ protocol_version: 153 }));
+    ws.deliverMessage(helloFrame({ protocol_version: version }));
 
     await expect(promise).rejects.toMatchObject({
       kind: "protocol_mismatch",
@@ -470,8 +479,10 @@ describe("openPhaseSocket", () => {
     const ws = MockWebSocket.instances[0];
     ws.deliverMessage(helloFrame({ protocol_version: 157 }));
 
-    await expect(promise).resolves.toBeDefined();
-    expect(ws.close).not.toHaveBeenCalled();
+    await expect(promise).rejects.toMatchObject({
+      kind: "protocol_mismatch",
+    });
+    expect(ws.close).toHaveBeenCalled();
   });
 
   it("rejects Full v139 before it can read the attack event's attacked players", async () => {

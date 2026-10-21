@@ -1905,6 +1905,30 @@ pub(crate) fn terminal_battlefield_departure_row(
         .then(|| &state.zone_changes_this_turn[index])
 }
 
+impl GameState {
+    /// CR 603.10 + CR 400.7: the settled observation of the battlefield entry `record` describes,
+    /// or `None`. Exact: this turn's row at this record's ledger index, naming this record's object
+    /// at its post-entry incarnation; a later entry reusing the storage id is a different object
+    /// (CR 400.7) and never answers for this one. Self-validating, so a restored row answers only
+    /// for the identical (turn, index, object, incarnation) entry.
+    pub(crate) fn battlefield_entry_observation(
+        &self,
+        record: &ZoneChangeRecord,
+    ) -> Option<&TriggerSourceContext> {
+        if record.to_zone != Zone::Battlefield || record.recorded_turn_number != self.turn_number {
+            return None;
+        }
+        self.battlefield_entry_observations
+            .get(&record.turn_zone_change_index)
+            .filter(|row| {
+                row.identity.reference.object_id == record.object_id
+                    && record
+                        .entered_incarnation
+                        .is_none_or(|incarnation| row.identity.reference.incarnation == incarnation)
+            })
+    }
+}
+
 /// CR 506.4 / CR 508.1k / CR 509.1g / CR 509.1h: Combat role snapshot for an
 /// object leaving its current zone.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2812,15 +2836,54 @@ pub struct PendingAttachmentRemainder {
     pub producer: Box<ResolvedAbility>,
 }
 
-/// Private continuation authority for an interactive player-scope exile
-/// instruction. Keeping the detached tail here makes generated APNAP nodes
-/// explicit without adding runtime provenance to `ResolvedAbility`.
+/// Private continuation authority for an interactive player-scope instruction
+/// whose detached unscoped tail must wait until every generated APNAP seat leg
+/// has drained. Keeping the tail here makes the generated legs explicit without
+/// adding runtime provenance to `ResolvedAbility`. It carries two channels, each
+/// read only by the consumer that needs it:
+/// - the linked-exile batch (CR 607.2a + CR 608.2f), live when `after_scope`
+///   holds a linked-exile consumer;
+/// - each seat's pinned creation result (CR 608.2c + CR 608.2e + CR 608.2f +
+///   CR 111.1), live when `created_tokens` is `Some`: per seat, in APNAP
+///   order, every token that seat's instruction of the scoped creation action
+///   made (replacement-made tokens included, CR 614.1a), pinned at creation
+///   (CR 400.7). Their union is the referent of a tail that reads "the tokens";
+///   each entry is the "it" of that seat's co-scoped second action. The last
+///   entry is the seat in progress.
+///
+/// Wire keys are unchanged from the linked-exile-only sidecar; a sidecar
+/// serialized without `created_tokens` decodes as linked-exile-only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PendingPlayerScopeLinkedExile {
+pub(crate) struct PendingPlayerScopeTail {
     pub source_id: ObjectId,
     pub after_scope: Box<ResolvedAbility>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub batch: Vec<ObjectIncarnationRef>,
+    #[serde(rename = "batch", default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_exile_batch: Vec<ObjectIncarnationRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_tokens: Option<Vec<SeatCreatedTokens>>,
+}
+
+/// CR 608.2e + CR 400.7: one seat's creation result inside a player-scoped
+/// token-creation action — the tokens that seat's instruction created, each
+/// pinned to the incarnation it had when created. Keyed by the instructed
+/// seat, never by a token's owner or controller: a replacement can change who
+/// controls a created token (CR 616.1b), but the token is still the product of
+/// that seat's instruction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SeatCreatedTokens {
+    pub seat: PlayerId,
+    pub tokens: Vec<ObjectIncarnationRef>,
+}
+
+/// Execution-local handoff of a completed player-scoped token-creation
+/// clause's per-seat results to its detached tail, installed only for the
+/// duration of that tail's resolution call. `source_id` is the producing
+/// instruction's source, so a co-scoped consumer binds origin only from its
+/// own producer's results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CreatedTokenSeatsHandoff {
+    pub source_id: ObjectId,
+    pub seats: Vec<SeatCreatedTokens>,
 }
 
 /// One execution of a resolving root, distinct for originals and spell copies.
@@ -2866,10 +2929,15 @@ pub struct PendingContinuation {
     /// unprocessed members of a selected multi-attachment operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_remainder: Option<PendingAttachmentRemainder>,
-    /// CR 608.2f: exact linked-exile union and detached unscoped tail owned by
-    /// a generated player-scope continuation. Legacy saves default to `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) player_scope_linked_exile: Option<PendingPlayerScopeLinkedExile>,
+    /// CR 608.2f: the detached unscoped tail of a generated player-scope
+    /// continuation and the channels it reads (linked-exile batch, per-seat
+    /// creation results). Legacy saves default to `None`.
+    #[serde(
+        rename = "player_scope_linked_exile",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) player_scope_tail: Option<PendingPlayerScopeTail>,
     /// Private queue terminator for generated player-scope continuations. The
     /// placeholder `chain` is never resolved when this is set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -2917,7 +2985,7 @@ impl PendingContinuation {
             trigger_firing: state.resolving_trigger_firing,
             attachment_choice: None,
             attachment_remainder: None,
-            player_scope_linked_exile: state.resolving_player_scope_linked_exile.clone(),
+            player_scope_tail: state.resolving_player_scope_tail.clone(),
             player_scope_queue_end: false,
         }
     }
@@ -2941,9 +3009,101 @@ impl PendingContinuation {
             trigger_firing: state.resolving_trigger_firing,
             attachment_choice: None,
             attachment_remainder: None,
-            player_scope_linked_exile: state.resolving_player_scope_linked_exile.clone(),
+            player_scope_tail: state.resolving_player_scope_tail.clone(),
             player_scope_queue_end: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod player_scope_tail_serde_tests {
+    use super::*;
+    use crate::types::ability::{Effect, ResolvedAbility};
+
+    fn continuation_with_tail(tail: PendingPlayerScopeTail) -> PendingContinuation {
+        let state = GameState {
+            resolving_player_scope_tail: Some(tail),
+            ..GameState::default()
+        };
+        let chain = ResolvedAbility::new(Effect::NoOp, Vec::new(), ObjectId(7), PlayerId(0));
+        PendingContinuation::new(Box::new(chain), &state)
+    }
+
+    fn tail(created_tokens: Option<Vec<SeatCreatedTokens>>) -> PendingPlayerScopeTail {
+        PendingPlayerScopeTail {
+            source_id: ObjectId(7),
+            after_scope: Box::new(ResolvedAbility::new(
+                Effect::NoOp,
+                Vec::new(),
+                ObjectId(7),
+                PlayerId(0),
+            )),
+            linked_exile_batch: vec![ObjectIncarnationRef::of(ObjectId(11), 2)],
+            created_tokens,
+        }
+    }
+
+    /// The generalized sidecar keeps the linked-exile-only wire shape: a
+    /// sidecar without a created-token channel serializes under the legacy
+    /// keys only, and that JSON decodes with the channel absent.
+    #[test]
+    fn linked_only_sidecar_keeps_legacy_wire_keys_and_decodes_without_created_channel() {
+        let pending = continuation_with_tail(tail(None));
+        let json = serde_json::to_value(&pending).expect("continuation serializes");
+        let sidecar = json
+            .get("player_scope_linked_exile")
+            .and_then(serde_json::Value::as_object)
+            .expect("sidecar rides its legacy key");
+        let mut keys: Vec<&str> = sidecar.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["after_scope", "batch", "source_id"]);
+
+        let decoded: PendingContinuation =
+            serde_json::from_value(json).expect("legacy-shaped sidecar decodes");
+        let decoded_tail = decoded.player_scope_tail.expect("sidecar decoded");
+        assert_eq!(
+            decoded_tail.linked_exile_batch,
+            vec![ObjectIncarnationRef::of(ObjectId(11), 2)]
+        );
+        assert_eq!(decoded_tail.created_tokens, None);
+    }
+
+    /// The per-seat creation channel round-trips with each seat's pins, in
+    /// order, including an empty seat (the shape a seat in progress has), and
+    /// its wire element is `{seat, tokens}`.
+    #[test]
+    fn created_token_channel_round_trips() {
+        let seats = vec![
+            SeatCreatedTokens {
+                seat: PlayerId(1),
+                tokens: vec![ObjectIncarnationRef::of(ObjectId(21), 3)],
+            },
+            SeatCreatedTokens {
+                seat: PlayerId(2),
+                tokens: Vec::new(),
+            },
+        ];
+        let pending = continuation_with_tail(tail(Some(seats.clone())));
+        let wire = serde_json::to_value(&pending).expect("continuation serializes");
+        let element = &wire["player_scope_linked_exile"]["created_tokens"][0];
+        let mut keys: Vec<&str> = element
+            .as_object()
+            .expect("a seat entry is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["seat", "tokens"]);
+        assert_eq!(element["seat"], serde_json::json!(1));
+        let decoded: PendingContinuation =
+            serde_json::from_value(wire).expect("continuation decodes");
+        assert_eq!(decoded, pending);
+        assert_eq!(
+            decoded
+                .player_scope_tail
+                .and_then(|scope| scope.created_tokens),
+            Some(seats)
+        );
     }
 }
 
@@ -4282,7 +4442,9 @@ impl PendingZoneChangeDelivery {
 /// chooses two shock lands; only the first ever entered the battlefield).
 ///
 /// The struct stashes the per-iteration context (`ChangeZoneIterationCtx`)
-/// plus the unprocessed object ids; `drain_pending_change_zone_iteration`
+/// plus the unprocessed members, each carrying the entry modifications it was
+/// resolved to before the event's first member moved (`ChangeZoneMemberEntry`),
+/// not the raw gate spec; `drain_pending_change_zone_iteration`
 /// (in `effects/mod.rs`) re-enters the loop after each `ReplacementChoice`
 /// resolves. Drained before the repeat-for frame because the outer
 /// `repeat_for` loop may have stashed a chain that contains this inner
@@ -4301,18 +4463,14 @@ pub struct PendingChangeZoneIteration {
     /// The chosen member that is currently completing outside the ordinary
     /// `remaining` loop. Required even when the tail is empty.
     pub paused_current: Option<PendingZoneChangeDelivery>,
-    pub remaining: Vec<ObjectId>,
+    /// The unprocessed members with their pre-event entry modifications
+    /// (CR 603.6a).
+    pub remaining: Vec<ChangeZoneMemberEntry>,
     pub source_id: ObjectId,
     pub controller: PlayerId,
     pub origin: Option<crate::types::zones::Zone>,
     pub destination: crate::types::zones::Zone,
     pub enter_transformed: bool,
-    #[serde(
-        default,
-        with = "crate::types::zones::etb_tap_bool_compat",
-        skip_serializing_if = "EtbTapState::is_unspecified"
-    )]
-    pub enter_tapped: EtbTapState,
     /// CR 110.2a: Resolved-once controller override on ETB. `Some(pid)`
     /// routes the object to `pid`. `None` leaves the object under its
     /// owner's control. Resolved from `Effect::ChangeZone.enters_under`
@@ -4320,18 +4478,6 @@ pub struct PendingChangeZoneIteration {
     /// across an interactive pause.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enters_under_player: Option<PlayerId>,
-    pub enters_attacking: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub enter_with_counters: Vec<(crate::types::counter::CounterType, u32)>,
-    /// Conditional entry-counter specs carried across a pause so each remaining
-    /// object can be re-evaluated per-object on resume (Winter Soldier Hero
-    /// rider through `EffectZoneChoice`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub conditional_enter_with_counters: Vec<(
-        crate::types::ability::TargetFilter,
-        crate::types::counter::CounterType,
-        crate::types::ability::QuantityExpr,
-    )>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<crate::types::ability::Duration>,
     pub track_exiled_by_source: bool,
@@ -4350,8 +4496,8 @@ pub struct PendingChangeZoneIteration {
     /// replacement-ordering / as-enters pause so a paused-then-resumed
     /// face-down return (Yedora's dying creatures → face-down Forest lands)
     /// still applies the profile on resume. `None` = normal face-up entry.
-    /// Mirrors the `enter_tapped`/`enter_transformed`/`enters_under_player`
-    /// carry-through pattern on this same struct.
+    /// Mirrors the `enter_transformed`/`enters_under_player` carry-through
+    /// pattern on this same struct.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub face_down_profile: Option<crate::types::ability::FaceDownProfile>,
     /// CR 401.4 + CR 701.24a: Library placement override carried across a
@@ -4359,18 +4505,26 @@ pub struct PendingChangeZoneIteration {
     /// library" still suppresses auto-shuffle on resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_placement: Option<crate::types::ability::LibraryPosition>,
-    /// CR 614.12: gates the `enter_tapped`/`enters_attacking` riders on the
-    /// moved object's type, carried across a replacement-ordering / as-enters
-    /// pause so a paused-then-resumed gated move (Summoner's Grimoire) still
-    /// applies the riders only to a matching object on resume. `None` = apply
-    /// unconditionally. Mirrors the `enter_tapped`/`face_down_profile`
-    /// carry-through pattern on this same struct.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enters_modified_if: Option<crate::types::ability::TargetFilter>,
     /// CR 303.4f: Pre-resolved Aura host carried across a paused ChangeZone loop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enter_attached_to: Option<AttachTarget>,
     pub effect_kind: crate::types::ability::EffectKind,
+}
+
+/// CR 603.6a + CR 614.12: one member of a ChangeZone event with the
+/// effect-carried modifications it enters with — its gated entry counters and
+/// gated tapped/attacking riders — resolved against the board as it was before
+/// the event's first member moved. A co-entrant is not on the battlefield then,
+/// so neither its statics nor its presence affect another member's gates
+/// (Heliod, Sun-Crowned ruling 2020-01-24).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeZoneMemberEntry {
+    pub object_id: ObjectId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enter_with_counters: Vec<(CounterType, u32)>,
+    #[serde(default, skip_serializing_if = "EtbTapState::is_unspecified")]
+    pub enter_tapped: EtbTapState,
+    pub enters_attacking: bool,
 }
 
 /// CR 707.2 + CR 614.1a + CR 616.1: Resume state for `CopyTokenOf` when a
@@ -23086,6 +23240,16 @@ declare_game_state! {
     /// CR 400.7: Zone-change snapshots this turn, enabling data-driven condition queries.
     #[serde(default, skip_serializing_if = "im::Vector::is_empty")]
     pub zone_changes_this_turn: im::Vector<ZoneChangeRecord>,
+    /// CR 603.10 + CR 603.6a + CR 611.3c: each battlefield entry's entrant as it existed
+    /// immediately after its entry event — continuous effects applied, later instructions of the
+    /// same resolution (CR 608.2c) not yet applied. Keyed by the entry's
+    /// `ZoneChangeRecord::turn_zone_change_index` (the `zone_changes_this_turn` index space;
+    /// cleared with it). Written only by `zones::settle_battlefield_entry_observations`; read only
+    /// through `GameState::battlefield_entry_observation`. An entry with no row was never settled,
+    /// and enter observers read the live entrant (or its record). Engine-internal: stripped from
+    /// every viewer projection.
+    #[serde(default, skip_serializing_if = "im::OrdMap::is_empty")]
+    pub battlefield_entry_observations: im::OrdMap<usize, TriggerSourceContext>,
     /// CR 603.2c: Batched zone-change triggers already collected for
     /// `(definition_ref, recorded_turn_number, turn_zone_change_index)`. Prevents a second
     /// `process_triggers` pass over the same `ZoneChanged` events from
@@ -23220,7 +23384,16 @@ declare_game_state! {
     /// The serialized authority lives on `PendingContinuation`; every pause
     /// re-parks it before control returns to callers.
     #[serde(skip)]
-    pub(crate) resolving_player_scope_linked_exile: Option<PendingPlayerScopeLinkedExile>,
+    pub(crate) resolving_player_scope_tail: Option<PendingPlayerScopeTail>,
+
+    /// Execution-local handoff of a completed player-scoped token clause's
+    /// per-seat creation results to its detached tail. Installed only around
+    /// that tail's resolution call and restored on every return (including
+    /// errors), so it is `None` whenever a stack object begins resolving.
+    /// Never serialized: a pause inside the tail carries the results on the
+    /// tail's own continuation instead.
+    #[serde(skip)]
+    pub(crate) resolving_created_token_seats: Option<CreatedTokenSeatsHandoff>,
 
     /// CR 730.3e (second clause): routing override for the card components of a
     /// TOKEN merged permanent leaving the battlefield under a card-scoped
@@ -25118,6 +25291,11 @@ impl PostReplacementDrainStack {
 
     pub fn len(&self) -> usize {
         self.drains.len()
+    }
+
+    /// Every drain in this frame, outermost first. Read-only.
+    pub(crate) fn drains(&self) -> impl Iterator<Item = &PostReplacementDrain> {
+        self.drains.iter()
     }
 
     /// Is there a continuation that has not run yet?
@@ -29871,6 +30049,7 @@ impl GameState {
             players_who_sacrificed_artifact_this_turn: HashSet::new(),
             sacrificed_permanents_this_turn: im::Vector::new(),
             zone_changes_this_turn: im::Vector::new(),
+            battlefield_entry_observations: im::OrdMap::new(),
             batched_zone_change_trigger_fired: im::HashSet::new(),
             battlefield_entries_this_turn: im::Vector::new(),
             damage_dealt_this_turn: im::Vector::new(),
@@ -29892,7 +30071,8 @@ impl GameState {
             payment_transaction_replay: false,
             payment_transaction_just_handled: false,
             resolving_continuation_attach_host: None,
-            resolving_player_scope_linked_exile: None,
+            resolving_player_scope_tail: None,
+            resolving_created_token_seats: None,
             merged_card_component_route: None,
             resolution_coin_flip: None,
             pending_player_scope_sacrifice_choice: None,
@@ -32904,6 +33084,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         players_who_sacrificed_artifact_this_turn: _,
         sacrificed_permanents_this_turn: _,
         zone_changes_this_turn: _,
+        battlefield_entry_observations: _,
         batched_zone_change_trigger_fired: _,
         battlefield_entries_this_turn: _,
         damage_dealt_this_turn: _,
@@ -32925,7 +33106,8 @@ fn _gamestate_partition_is_total(s: &GameState) {
         payment_transaction_replay: _,
         payment_transaction_just_handled: _,
         resolving_continuation_attach_host: _,
-        resolving_player_scope_linked_exile: _,
+        resolving_player_scope_tail: _,
+        resolving_created_token_seats: _,
         merged_card_component_route: _,
         resolution_coin_flip: _,
         may_trigger_auto_choices: _,
@@ -33265,6 +33447,7 @@ impl PartialEq for GameState {
                 == other.players_who_sacrificed_artifact_this_turn
             && self.sacrificed_permanents_this_turn == other.sacrificed_permanents_this_turn
             && self.zone_changes_this_turn == other.zone_changes_this_turn
+            && self.battlefield_entry_observations == other.battlefield_entry_observations
             && self.batched_zone_change_trigger_fired == other.batched_zone_change_trigger_fired
             && self.battlefield_entries_this_turn == other.battlefield_entries_this_turn
             && self.damage_dealt_this_turn == other.damage_dealt_this_turn
@@ -36012,18 +36195,13 @@ mod tests {
             origin: Some(Zone::Battlefield),
             destination: Zone::Exile,
             enter_transformed: false,
-            enter_tapped: EtbTapState::Unspecified,
             enters_under_player: None,
-            enters_attacking: false,
-            enter_with_counters: Vec::new(),
-            conditional_enter_with_counters: Vec::new(),
             duration: None,
             track_exiled_by_source: false,
             face_down_in_exile: crate::types::ability::ExileConcealment::FaceDown,
             moved_count: None,
             face_down_profile: None,
             library_placement: None,
-            enters_modified_if: None,
             enter_attached_to: None,
             effect_kind: EffectKind::ChangeZone,
         });
@@ -46079,17 +46257,20 @@ mod tests {
             pending_return_result_producer: None,
             logical_zone_change_group,
             paused_current: None,
-            remaining: vec![],
+            // CR 603.6a + CR 614.12: a member carries the entry modifications
+            // resolved before the event's first member moved.
+            remaining: vec![ChangeZoneMemberEntry {
+                object_id: ObjectId(9),
+                enter_with_counters: vec![(CounterType::Plus1Plus1, 2)],
+                enter_tapped: EtbTapState::Tapped,
+                enters_attacking: true,
+            }],
             source_id: ObjectId(7),
             controller: PlayerId(0),
             origin: None,
             destination: Zone::Battlefield,
             enter_transformed: false,
-            enter_tapped: EtbTapState::Unspecified,
             enters_under_player: Some(PlayerId(1)),
-            enters_attacking: false,
-            enter_with_counters: vec![],
-            conditional_enter_with_counters: vec![],
             duration: None,
             track_exiled_by_source: false,
             face_down_in_exile: crate::types::ability::ExileConcealment::Public,
@@ -46108,10 +46289,24 @@ mod tests {
             }),
             library_placement: None,
             effect_kind: crate::types::ability::EffectKind::ChangeZone,
-            enters_modified_if: None,
             enter_attached_to: None,
         };
         let json = serde_json::to_string(&original).expect("serialize");
+        // The resolved members are the only entry-modification authority: the
+        // raw gate spec is no longer carried.
+        let carrier = serde_json::to_value(&original).expect("serialize carrier");
+        for removed in [
+            "enter_tapped",
+            "enters_attacking",
+            "enter_with_counters",
+            "conditional_enter_with_counters",
+            "enters_modified_if",
+        ] {
+            assert!(
+                carrier.get(removed).is_none(),
+                "carrier must not emit the removed `{removed}` field: {json}"
+            );
+        }
         // Modern shape must be emitted, NOT the legacy bool field.
         assert!(
             json.contains("\"enters_under_player\""),
@@ -46148,6 +46343,23 @@ mod tests {
         assert!(
             error.to_string().contains("immediately_before_latched"),
             "missing latch rejection must name the missing authority: {error}"
+        );
+
+        // The carrier itself never accepts bare-id members. A persisted v1–v6
+        // carrier is migrated or refused before this decode by
+        // `migrate_legacy_change_zone_carrier` (`types/resolution.rs`), reached
+        // from the v1 reader arm and from
+        // `migrate_legacy_change_zone_member_entries` for v2–v6.
+        let mut bare_ids = serde_json::to_value(&original).expect("serialize modern carrier");
+        bare_ids
+            .as_object_mut()
+            .expect("pending carrier serializes as an object")
+            .insert("remaining".to_string(), serde_json::json!([7]));
+        let error = serde_json::from_value::<PendingChangeZoneIteration>(bare_ids)
+            .expect_err("legacy bare-id members must reject");
+        assert!(
+            error.to_string().contains("ChangeZoneMemberEntry"),
+            "bare-id member rejection must name the member carrier: {error}"
         );
 
         // A same-kind child is a distinct operation. It must not absorb the
